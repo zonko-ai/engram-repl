@@ -8,6 +8,8 @@ import WebSocket from "ws";
 const ROOT = new URL("../../..", import.meta.url).pathname;
 const PROD_BASELINE = "wss://engram.umgbhalla.xyz";
 const args = parseArgs(process.argv.slice(2));
+const expect = String(args.expect || "fixed");
+const only = String(args.only || "all");
 const outDir = path.join(ROOT, "scratch/beam/fault-injection-results");
 mkdirSync(outDir, { recursive: true });
 
@@ -17,6 +19,7 @@ const url = String(args.url || "");
 const local = !url;
 const port = Number(args.port || 8788);
 const endpoint = local ? "ws://127.0.0.1:" + port : url.replace(/\/$/, "");
+const wsPath = String(args.wsPath || "/ws");
 if (endpoint === PROD_BASELINE || endpoint.startsWith(PROD_BASELINE + "/")) {
   throw new Error("refusing to run fault injection against prod baseline " + PROD_BASELINE);
 }
@@ -63,17 +66,23 @@ async function caseBug2R2Miss(run) {
   const s = "fault-bug2-" + Date.now().toString(36);
   const c = await Client.open(endpoint, s);
   await c.rpc({ t: "create", config: { faultTest: true, modules: false, rngSeed: 9 } });
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 19; i++) {
     const r = await c.rpc({ t: "eval", src: "globalThis.bug2_" + i + "=" + i + "; " + i }, 45000);
     if (r.ok !== true) throw new Error("bug2 setup failed at " + i + ": " + JSON.stringify(r));
   }
-  const base = await c.rpc({ t: "eval", src: "42" }, 45000);
-  const r2Key = base.checkpoint?.r2Key || "*";
-  await c.rpc({ t: "_fault", op: "r2-miss-once", key: r2Key || "*" });
+  // Arm the miss BEFORE the rollover cell. Fixed code consumes it during verify-before-truncate and
+  // stores the new base in SQLite. Baseline code has no verification read, so the miss survives until
+  // cold restore and forces replay from the newly truncated one-row oplog.
+  await c.rpc({ t: "_fault", op: "r2-miss-once", key: "*" });
+  await c.rpc({ t: "_fault", op: "force-r2-next-full" });
+  const base = await c.rpc({ t: "eval", src: "globalThis.bug2_final = 21; bug2_final" }, 120000);
+  const r2Key = base.checkpoint?.r2Key || "";
   await c.rpc({ t: "evict" });
-  const restored = await c.rpc({ t: "eval", src: "bug2_0 + bug2_21" }, 90000);
-  const ok = restored.ok === true && restored.value === 21 && /replay|restore/.test(String(restored.restoreSource));
-  record(run, "bug2_r2_miss_no_silent_loss", ok, JSON.stringify({ r2Key, restored }));
+  const restored = await c.rpc({ t: "eval", src: "({sum: bug2_0 + bug2_final, hasPayload: typeof bug2_payload})" }, 120000);
+  const fixedOk = base.ok === true && base.checkpoint?.store === "sqlite" && restored.ok === true && restored.value?.sum === 21;
+  const baselineRepro = base.ok === true && base.checkpoint?.store === "r2" && restored.ok === false && /bug2_0|not defined|ReferenceError/.test(JSON.stringify(restored));
+  const ok = expect === "baseline" ? baselineRepro : fixedOk;
+  record(run, expect === "baseline" ? "bug2_r2_miss_silent_loss_reproduced" : "bug2_r2_miss_closed", ok, JSON.stringify({ expect, baseCheckpoint: base.checkpoint, r2Key, restored }));
   c.close();
 }
 
@@ -92,8 +101,10 @@ async function caseBug3ParkedVfsRace(run) {
   const ev = await evalP;
   const read = await c2.rpc({ t: "vfs-read", path: "/workspace/race.txt" }, 30000);
   const body = read.dataB64 ? Buffer.from(read.dataB64, "base64").toString("utf8") : "";
-  const ok = wr.ok === true && ev.ok === true && read.ok === true && body === "frame";
-  record(run, "bug3_parked_vfs_write_preserved", ok, JSON.stringify({ hostcall: hc, wr, ev, read, body }));
+  const fixedOk = wr.ok === true && ev.ok === true && read.ok === true && body === "frame";
+  const baselineRepro = wr.ok === true && ev.ok === true && read.ok === true && body === "cell";
+  const ok = expect === "baseline" ? baselineRepro : fixedOk;
+  record(run, expect === "baseline" ? "bug3_parked_vfs_clobber_reproduced" : "bug3_parked_vfs_write_preserved", ok, JSON.stringify({ expect, hostcall: hc, wr, ev, read, body }));
   c2.close();
   c.close();
 }
@@ -127,7 +138,8 @@ async function startWrangler(port) {
 
 class Client {
   static open(base, session) {
-    const wsUrl = base.replace(/^http/, "ws") + "/ws?id=" + encodeURIComponent(session);
+    const sep = wsPath.includes("?") ? "&" : "?";
+    const wsUrl = base.replace(/^http/, "ws") + wsPath + sep + "id=" + encodeURIComponent(session);
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
       const c = new Client(ws);
@@ -210,11 +222,11 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 let dev;
 try {
   if (local) dev = await startWrangler(port);
-  const run = { startedAt: new Date().toISOString(), endpoint, results: [] };
+  const run = { startedAt: new Date().toISOString(), endpoint, expect, results: [] };
   await caseGateOff(run);
-  await caseTelemetryAndBug1Ceiling(run);
-  await caseBug2R2Miss(run);
-  await caseBug3ParkedVfsRace(run);
+  if (only === "all" || only === "bug1") await caseTelemetryAndBug1Ceiling(run);
+  if (only === "all" || only === "bug2") await caseBug2R2Miss(run);
+  if (only === "all" || only === "bug3") await caseBug3ParkedVfsRace(run);
   run.finishedAt = new Date().toISOString();
   const out = path.join(outDir, "fault-run-" + Date.now() + ".json");
   writeFileSync(out, JSON.stringify(run, null, 2));

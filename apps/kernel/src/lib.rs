@@ -2497,6 +2497,7 @@ impl KernelDO {
                         "activeEval": self.active_eval(),
                         "r2MissOnceKey": self.fault_read_meta("r2MissOnceKey").unwrap_or_default(),
                         "r2MissOnceFired": self.fault_read_meta("r2MissOnceFired").unwrap_or_default(),
+                        "forceR2NextFull": self.fault_read_meta("forceR2NextFull").unwrap_or_default(),
                     })),
                     "r2-miss-once" => {
                         let key = msg.get("key").and_then(|v| v.as_str()).unwrap_or("*");
@@ -2504,9 +2505,14 @@ impl KernelDO {
                         self.fault_write_meta("r2MissOnceFired", "0");
                         Ok(json!({"ok": true, "t": "_fault", "op": op, "key": key}))
                     }
+                    "force-r2-next-full" => {
+                        self.fault_write_meta("forceR2NextFull", "1");
+                        Ok(json!({"ok": true, "t": "_fault", "op": op}))
+                    }
                     "clear" => {
                         self.fault_write_meta("r2MissOnceKey", "");
                         self.fault_write_meta("r2MissOnceFired", "");
+                        self.fault_write_meta("forceR2NextFull", "");
                         Ok(json!({"ok": true, "t": "_fault", "op": op}))
                     }
                     "checkpoint-evict" => {
@@ -3475,7 +3481,12 @@ impl KernelDO {
                 None
             }
         });
-        let want_r2 = bytes.len() > SQLITE_HOT_MAX;
+        let force_r2 = self.fault_test_enabled()
+            && self.fault_read_meta("forceR2NextFull").unwrap_or_default() == "1";
+        if force_r2 {
+            self.fault_write_meta("forceR2NextFull", "");
+        }
+        let want_r2 = bytes.len() > SQLITE_HOT_MAX || force_r2;
         let (store, new_r2_key, to_r2) = if want_r2 {
             let new_key = self.r2_key_for(cell, epoch);
             let bucket = self.env.bucket("SNAPSHOTS")?;
