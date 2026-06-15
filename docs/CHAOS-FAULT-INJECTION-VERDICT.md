@@ -57,18 +57,49 @@ The existing incompressible guard remains stricter for live heap content:
 normal mostly-zero sessions around ~29MiB raw remain admissible when their live/incompressible heap is
 small, while genuinely large raw images are rejected before they can commit an un-restorable base.
 
-## Ceilings (Phase 1.5) — local workerd sweeps
+## Ceilings (Phase 1.5)
 
-Measured on the local fault-test kernel (`tests/chaos/fault-injection/ceilings.mjs`):
+Command:
 
-- **JS call-stack depth** — synchronous recursion OK through **depth 1024**; **RangeError at 1536+**. Safe synchronous-recursion budget ≈ 1024 frames; cliff between 1024 and 1536.
-- **Snapshot / recursion-tree chain depth** — durable chain restores cleanly from depth 1 upward via `sqlite-restore`; restore cost grows with chain length (gunzip + page-grow per link). Limit is cost, not correctness.
-- **Heap per node** — 8MiB & 16MiB raw checkpoint fine (mostly-zero, ~477KB gz, SQLite store). BUG-1 gate rejects ≥24MiB *incompressible* / ≥60MiB raw before committing an un-restorable base.
-- **Host-call fan-out per cell** — served cleanly to **65**; at 80 requested only **65 served** (rest truncated) — confirms the **64 host-call/cell cap**.
-- **Sequential session density** — 1→64 linear (~136ms/session); **128 sessions all OK** at ~18.0s (~141ms/session). No correctness cliff; throughput-bound.
-- **Static orchestration envelope** — **128 facets/shard × 64 shards = 8192 theoretical facet slots**; **CoW amplification = O(children × rawImageBytes)** because the substrate has **no fork primitive yet** (children copy the full heap image) — exactly the Phase-2 fork-from-parent-heap target.
+```sh
+PATH="$HOME/.cargo/bin:$PATH" node tests/chaos/fault-injection/ceilings.mjs
+```
 
-Result file: `scratch/beam/fault-injection-results/ceilings-run-1781503284383.json`.
+Result file:
+
+```
+scratch/beam/fault-injection-results/ceilings-run-1781503284383.json
+```
+
+Concrete cliffs:
+
+- **D / synchronous JS recursion:** clean QuickJS `RangeError` begins at depth **1536**.
+  Last passing point in the sweep was **1024**; the WebSocket stayed open for all failures.
+- **D / durable snapshot-chain restore:** no cliff through **25** forced evict/restore checkpoints.
+  The chain compacts at rollover: depth 15 restored 18 deltas, depth 19 restored 0 deltas after the
+  new base, and depth 25 restored 9 deltas.
+- **STACK / raw heap:** 8MiB and 16MiB string payloads checkpointed. 24MiB and above hit typed
+  `SizeAdmissionError`; 24MiB trips the **24MiB incompressible** guard, while 48MiB+ trips the
+  **60MiB raw linear-buffer** guard. 64MiB fails earlier as QuickJS `InternalError`.
+- **FAN-OUT / per-cell host calls:** 1, 8, 32, 64, and 65 paused host calls completed. The 80-call
+  probe emitted only **65** host-call frames and returned `0`, so local workerd's practical cliff is
+  **after 65** despite the intended per-cell cap being 64.
+- **ORCHESTRATION / sequential sessions:** no local cliff through **128** sequential create+eval
+  sessions. Times were 1=181ms, 8=1086ms, 32=4304ms, 64=8717ms, 128=18019ms.
+- **CoW / heap growth per added cell:** no `host.fork`/CoW primitive exists yet, so child sessions
+  copy a full heap image: `O(children * rawImageBytes)`. In the chain sweep the first cell grew the
+  raw image **19.3MiB -> 25.3MiB**, the second to **27.3MiB**, then it plateaued at **27.3MiB**
+  through depth 25 for the tiny `chain++` cell.
+
+Small curves:
+
+| Sweep | Curve |
+|---|---|
+| JS recursion depth | 64 ok, 128 ok, 256 ok, 384 ok, 512 ok, 768 ok, 1024 ok, 1536 RangeError, 2048+ RangeError |
+| Snapshot-chain depth | 1 ok/71ms/0 deltas, 2 ok/76ms/2 deltas, 5 ok/78ms/6, 10 ok/78ms/12, 15 ok/203ms/18, 19 ok/74ms/0, 20 ok/198ms/2, 21 ok/75ms/4, 25 ok/75ms/9 |
+| Heap payload | 8MiB ok raw=26.3MiB used=8.6MiB, 16MiB ok raw=34.3MiB used=16.6MiB, 24/32MiB incompressible SizeAdmissionError, 48/56/60/61MiB raw SizeAdmissionError, 64MiB InternalError |
+| Host-call fanout | 1 ok, 8 ok, 32 ok, 64 ok, 65 ok, 80 served=65 value=0 |
+| Sequential sessions | 1/1 ok 181ms, 8/8 ok 1086ms, 32/32 ok 4304ms, 64/64 ok 8717ms, 128/128 ok 18019ms |
 
 ## Phase-2 readiness note
 
