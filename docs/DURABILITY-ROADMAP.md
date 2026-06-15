@@ -11,6 +11,20 @@
 
 ---
 
+## 2026-06-15 chaos fault-injection closure
+
+Fault-test hooks and local chaos gates now live under `tests/chaos/fault-injection/`; see
+`docs/CHAOS-FAULT-INJECTION-VERDICT.md`.
+
+- BUG-1: raw restore admission is now gated by `MEASURED_RESTORE_RAW_CEILING_BYTES = 60MiB`
+  (`SAFE_SERIALIZE_BUFFER_BYTES` and `MAX_RESTORE_RAW_BYTES` lockstep), while the stricter 24MiB
+  incompressible-live-heap guard remains in place.
+- BUG-2: verify-before-truncate remains the code fix; the local harness includes the one-shot
+  `r2_get_resilient` durable-miss hook, but local safe payloads stayed in SQLite, so the real R2
+  overflow miss leg still needs a throwaway Cloudflare run if we want black-box R2 timing evidence.
+- BUG-3: parked continuation vs mutex-free `vfs-write` is locally chaos-verified: a frame-origin write
+  committed during `host.pause` survives the resumed cell's staged flush.
+
 ## The sequence
 
 ```

@@ -21,8 +21,8 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::rc::Rc;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use store::{DoSqlStore, KernelStore};
@@ -346,7 +346,10 @@ impl DurableObject for KernelDO {
         );
         // Issue #9: codec for the BASE image blob ("gzip" | "zstd"). NULL/absent => "gzip" so any
         // snapshot written before this deploy still restores. New full bases write "zstd".
-        store.exec_ignore("ALTER TABLE snap_manifest ADD COLUMN snap_codec TEXT;", None);
+        store.exec_ignore(
+            "ALTER TABLE snap_manifest ADD COLUMN snap_codec TEXT;",
+            None,
+        );
         write_meta(&store, "snapFormat", SNAPSHOT_FORMAT_VERSION);
         store
             .exec(
@@ -620,7 +623,9 @@ impl DurableObject for KernelDO {
         let _ = js_sys::Function::from(release).call0(&JsValue::NULL);
         match reply {
             Ok(v) => Response::from_json(&v),
-            Err(e) => Response::from_json(&json!({"ok": false, "t": "flush", "trigger": "alarm", "error": format!("{e}")})),
+            Err(e) => Response::from_json(
+                &json!({"ok": false, "t": "flush", "trigger": "alarm", "error": format!("{e}")}),
+            ),
         }
     }
 }
@@ -765,7 +770,10 @@ impl KernelDO {
         *self.active_eval.borrow()
     }
 
-    fn try_enter_vm_queue(&self, frame_t: &str) -> std::result::Result<VmQueuePermit<'_>, serde_json::Value> {
+    fn try_enter_vm_queue(
+        &self,
+        frame_t: &str,
+    ) -> std::result::Result<VmQueuePermit<'_>, serde_json::Value> {
         let max = self.max_eval_queue_depth();
         let mut depth = self.eval_queue_depth.borrow_mut();
         if *depth >= max {
@@ -869,14 +877,13 @@ impl KernelDO {
 
     fn pending_eval_reply(cell: i64, src: &str) -> String {
         let timeout_like = src.contains("while (true)") || src.contains("__timeoutSpin");
-        let side_effect_like =
-            src.contains("=")
-                || src.contains("++")
-                || src.contains("--")
-                || src.contains(".push(")
-                || src.contains(".splice(")
-                || src.contains(".set(")
-                || src.contains("delete ");
+        let side_effect_like = src.contains("=")
+            || src.contains("++")
+            || src.contains("--")
+            || src.contains(".push(")
+            || src.contains(".splice(")
+            || src.contains(".set(")
+            || src.contains("delete ");
         json!({
             "__engramPending": true,
             "cell": cell,
@@ -886,7 +893,10 @@ impl KernelDO {
         .to_string()
     }
 
-    fn pending_eval_replay(reply: &serde_json::Value, generation: i64) -> Option<serde_json::Value> {
+    fn pending_eval_replay(
+        reply: &serde_json::Value,
+        generation: i64,
+    ) -> Option<serde_json::Value> {
         if reply
             .get("__engramPending")
             .and_then(|v| v.as_bool())
@@ -969,6 +979,47 @@ impl KernelDO {
             .unwrap_or_else(|_| json!({}))
     }
 
+    fn fault_test_enabled(&self) -> bool {
+        let env_on = self
+            .env
+            .var("ENGRAM_FAULT_TEST")
+            .ok()
+            .map(|v| v.to_string() == "1")
+            .unwrap_or(false);
+        if !env_on {
+            return false;
+        }
+        self.config_json()
+            .get("faultTest")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    fn fault_reject(&self, t: &str) -> serde_json::Value {
+        json!({
+            "ok": false,
+            "t": t,
+            "valueType": "error",
+            "error": {
+                "name": "FaultTestDisabled",
+                "message": "fault-injection hooks require ENGRAM_FAULT_TEST=1 and config.faultTest=true"
+            },
+            "generation": self.generation,
+        })
+    }
+
+    fn fault_meta_key(name: &str) -> String {
+        format!("faultTest.{name}")
+    }
+
+    fn fault_read_meta(&self, name: &str) -> Option<String> {
+        read_str(&self.store(), &Self::fault_meta_key(name))
+    }
+
+    fn fault_write_meta(&self, name: &str, value: &str) {
+        write_meta(&self.store(), &Self::fault_meta_key(name), value);
+    }
+
     fn config_durability(&self) -> String {
         self.config_json()
             .get("durability")
@@ -1023,7 +1074,11 @@ impl KernelDO {
         if src.len() <= SQLITE_MAX_VALUE_BYTES {
             write_meta(&store, "lastDirtySrc", src);
         } else {
-            write_meta(&store, "lastDirtySrc", "/* engram: warmBuffered source omitted */");
+            write_meta(
+                &store,
+                "lastDirtySrc",
+                "/* engram: warmBuffered source omitted */",
+            );
         }
         let _ = self
             .state
@@ -1077,7 +1132,8 @@ impl KernelDO {
         }
 
         let epoch = read_int(&store, "epoch", 0);
-        let src = read_str(&store, "lastDirtySrc").unwrap_or_else(|| "/* engram warmBuffered flush */".into());
+        let src = read_str(&store, "lastDirtySrc")
+            .unwrap_or_else(|| "/* engram warmBuffered flush */".into());
         let ckpt = self.checkpoint_force_full(live, epoch, &src).await?;
         let ok = ckpt.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         if ok {
@@ -1169,7 +1225,9 @@ impl KernelDO {
         let binding = self.vfs_binding();
         let key = format!("fs/{}/.engram/manifest.json", self.do_id);
         // Best-effort PUT: a failure leaves the prior manifest (or none) — never fails the checkpoint.
-        let _ = self.r2_put_resilient(&binding, &key, doc.into_bytes()).await;
+        let _ = self
+            .r2_put_resilient(&binding, &key, doc.into_bytes())
+            .await;
     }
 
     /// Flush this cell's STAGED host.fs mutations to durable storage as part of `store_ckpt` — i.e.
@@ -1185,10 +1243,9 @@ impl KernelDO {
             return;
         }
         // Resolve binding from config (default SNAPSHOTS); prefix is hard-bound to the DO id.
-        let cfg: serde_json::Value = serde_json::from_str(
-            &read_str(store, "config").unwrap_or_else(|| "{}".into()),
-        )
-        .unwrap_or_else(|_| json!({}));
+        let cfg: serde_json::Value =
+            serde_json::from_str(&read_str(store, "config").unwrap_or_else(|| "{}".into()))
+                .unwrap_or_else(|_| json!({}));
         let binding = cfg
             .get("fs")
             .and_then(|f| f.get("binding"))
@@ -1249,7 +1306,10 @@ impl KernelDO {
                     );
                 }
                 FsStageOp::Delete => {
-                    let _ = store.exec("DELETE FROM fs_files WHERE path=?;", Some(vec![path.clone().into()]));
+                    let _ = store.exec(
+                        "DELETE FROM fs_files WHERE path=?;",
+                        Some(vec![path.clone().into()]),
+                    );
                     let _ = bucket.delete(&key).await; // best-effort body GC; orphan is harmless
                 }
             }
@@ -1321,7 +1381,10 @@ impl KernelDO {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let raw_path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
         // CWD-aware resolution: relative paths resolve against the frame cwd (default /workspace).
-        let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or(WORKSPACE_ROOT);
+        let cwd = msg
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(WORKSPACE_ROOT);
         let path = match norm_fs_path_cwd(raw_path, cwd) {
             Ok(p) => p,
             Err(_) => {
@@ -1337,8 +1400,14 @@ impl KernelDO {
                     "error":"EINVAL: bad base64 dataB64"}))
             }
         };
-        let truncate = msg.get("truncate").and_then(|v| v.as_bool()).unwrap_or(false);
-        let offset = msg.get("offset").and_then(|v| v.as_f64()).map(|f| f as usize);
+        let truncate = msg
+            .get("truncate")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let offset = msg
+            .get("offset")
+            .and_then(|v| v.as_f64())
+            .map(|f| f as usize);
 
         let binding = self.vfs_binding();
         let prefix = format!("fs/{}/", self.do_id);
@@ -1416,7 +1485,9 @@ impl KernelDO {
         bump_fs_version(&store);
         self.export_manifest().await;
         self.emit(&Datapoint::new("vfs-write"));
-        Ok(json!({"t":"vfs-write-result","id":id,"ok":true,"bytesWritten":bytes_written,"fsVersion":read_fs_version(&store)}))
+        Ok(
+            json!({"t":"vfs-write-result","id":id,"ok":true,"bytesWritten":bytes_written,"fsVersion":read_fs_version(&store)}),
+        )
     }
 
     /// vfs-read `{path, offset?, len?}` -> `{ok, dataB64, eof, size?, error?}`. Client-driven
@@ -1426,7 +1497,10 @@ impl KernelDO {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let raw_path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
         // CWD-aware resolution: relative paths resolve against the frame cwd (default /workspace).
-        let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or(WORKSPACE_ROOT);
+        let cwd = msg
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(WORKSPACE_ROOT);
         let path = match norm_fs_path_cwd(raw_path, cwd) {
             Ok(p) => p,
             Err(_) => {
@@ -1507,7 +1581,10 @@ impl KernelDO {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let raw_path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
         // CWD-aware resolution: relative paths resolve against the frame cwd (default /workspace).
-        let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or(WORKSPACE_ROOT);
+        let cwd = msg
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(WORKSPACE_ROOT);
         let path = match norm_fs_path_cwd(raw_path, cwd) {
             Ok(p) => p,
             Err(_) => {
@@ -1521,7 +1598,11 @@ impl KernelDO {
         }
         // No own row: synthetic dir if it is a parent prefix of any committed row.
         let committed = self.read_fs_committed();
-        let dir = if path == "/" { "/".to_string() } else { format!("{}/", path) };
+        let dir = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", path)
+        };
         let is_dir = path == "/" || committed.keys().any(|k| k.starts_with(&dir));
         if is_dir {
             return Ok(json!({"t":"vfs-stat-result","id":id,"ok":true,
@@ -1547,7 +1628,10 @@ impl KernelDO {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let raw_path = msg.get("path").and_then(|v| v.as_str()).unwrap_or("");
         // CWD-aware resolution: relative paths resolve against the frame cwd (default /workspace).
-        let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or(WORKSPACE_ROOT);
+        let cwd = msg
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .unwrap_or(WORKSPACE_ROOT);
         let path = match norm_fs_path_cwd(raw_path, cwd) {
             Ok(p) => p,
             Err(_) => {
@@ -1556,7 +1640,11 @@ impl KernelDO {
             }
         };
         let committed = self.read_fs_committed();
-        let pre = if path == "/" { "/".to_string() } else { format!("{}/", path) };
+        let pre = if path == "/" {
+            "/".to_string()
+        } else {
+            format!("{}/", path)
+        };
         // child segment -> (size, isDir). A file child has its own row (isDir=false); a dir child
         // appears as the first segment of a deeper path with no own row.
         let mut seen: std::collections::BTreeMap<String, (i64, bool)> =
@@ -1675,7 +1763,11 @@ impl KernelDO {
 
         let mut dp = Datapoint::new("worker-register");
         dp.size_raw = bytes;
-        dp.label = if cached { "cached".into() } else { "stored".into() };
+        dp.label = if cached {
+            "cached".into()
+        } else {
+            "stored".into()
+        };
         self.emit(&dp);
         Ok(json!({"t":"worker-register-result","id":id,"ok":true,
             "hash":hash,"bytes":bytes,"cached":cached}))
@@ -1695,9 +1787,16 @@ impl KernelDO {
         };
 
         // hash format: exactly 64 lowercase hex chars (defends the R2 key + the codeId).
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         {
-            return Ok(reply_err("ContractError", "hash must match ^[0-9a-f]{64}$".into(), 0.0));
+            return Ok(reply_err(
+                "ContractError",
+                "hash must match ^[0-9a-f]{64}$".into(),
+                0.0,
+            ));
         }
         // INVOKE GATE: this session must have registered the hash (closes "any authed session can
         // run any source whose hash it learned"). register is cheap + idempotent.
@@ -1833,14 +1932,18 @@ impl KernelDO {
         let ms = now_ms() - t0;
         // The harness envelope is {ok, output|error}. Parse it; cap the output size.
         const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
-        let parsed: serde_json::Value =
-            serde_json::from_str(&out_json).unwrap_or_else(|_| json!({"ok":false,
-                "error":{"name":"WorkerRuntimeError","message":"invalid worker envelope"}}));
+        let parsed: serde_json::Value = serde_json::from_str(&out_json).unwrap_or_else(|_| {
+            json!({"ok":false,
+                "error":{"name":"WorkerRuntimeError","message":"invalid worker envelope"}})
+        });
         let ok = parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
         let mut dp = Datapoint::new("worker-invoke");
         dp.total_server_ms = ms;
         if ok {
-            let output = parsed.get("output").cloned().unwrap_or(serde_json::Value::Null);
+            let output = parsed
+                .get("output")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let out_str = serde_json::to_string(&output).unwrap_or_else(|_| "null".into());
             if out_str.len() > MAX_OUTPUT_BYTES {
                 dp.ok = false;
@@ -1848,7 +1951,10 @@ impl KernelDO {
                 self.emit(&dp);
                 return Ok(reply_err(
                     "OutputTooLargeError",
-                    format!("output JSON {}B exceeds 1MB cap (use env.VFS for large data)", out_str.len()),
+                    format!(
+                        "output JSON {}B exceeds 1MB cap (use env.VFS for large data)",
+                        out_str.len()
+                    ),
                     ms,
                 ));
             }
@@ -1856,9 +1962,10 @@ impl KernelDO {
             self.emit(&dp);
             Ok(json!({"t":"worker-invoke-result","id":id,"ok":true,"output":output,"ms":ms}))
         } else {
-            let err = parsed.get("error").cloned().unwrap_or_else(|| {
-                json!({"name":"WorkerRuntimeError","message":"worker failed"})
-            });
+            let err = parsed
+                .get("error")
+                .cloned()
+                .unwrap_or_else(|| json!({"name":"WorkerRuntimeError","message":"worker failed"}));
             dp.ok = false;
             dp.error_name = err
                 .get("name")
@@ -1904,11 +2011,13 @@ impl KernelDO {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let op = msg.get("op").and_then(|v| v.as_str()).unwrap_or("");
         // Capability gate: only sessions with config.sandbox:true get the route.
-        let cfg: serde_json::Value = serde_json::from_str(
-            &read_str(&self.store(), "config").unwrap_or_else(|| "{}".into()),
-        )
-        .unwrap_or_else(|_| json!({}));
-        let enabled = cfg.get("sandbox").and_then(|v| v.as_bool()).unwrap_or(false);
+        let cfg: serde_json::Value =
+            serde_json::from_str(&read_str(&self.store(), "config").unwrap_or_else(|| "{}".into()))
+                .unwrap_or_else(|_| json!({}));
+        let enabled = cfg
+            .get("sandbox")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !enabled {
             return Ok(json!({"t":"sandbox-result","id":id,"ok":false,
                 "error":"SandboxUnavailable: config.sandbox not enabled"}));
@@ -2195,6 +2304,17 @@ impl KernelDO {
     /// reads add no entropy). The image body is read whole (range/streamed read deferred — see #10
     /// notes; SQLITE_HOT_MAX=8MB keeps most images off this path entirely).
     async fn r2_get_resilient(&self, key: &str) -> R2Read {
+        if self.fault_test_enabled() {
+            let target = self.fault_read_meta("r2MissOnceKey").unwrap_or_default();
+            let fired = self.fault_read_meta("r2MissOnceFired").unwrap_or_default();
+            if !target.is_empty() && fired != "1" && (target == key || target == "*") {
+                self.fault_write_meta("r2MissOnceFired", "1");
+                console_log(&format!(
+                    "[fault-test] injecting one-shot durable R2 miss for key {key}"
+                ));
+                return R2Read::Missing;
+            }
+        }
         for attempt in 0..R2_GET_ATTEMPTS {
             if attempt > 0 {
                 let backoff = R2_GET_BACKOFF_MS
@@ -2263,7 +2383,12 @@ impl KernelDO {
     /// per-attempt timeout + circuit-breaker (#10). Returns Ok on a durable put, Err after exhausting
     /// retries (caller then SKIPS the meta row so the namespace stays coherent — the file is absent on
     /// restore, never a dangling reference). Determinism preserved (fixed backoffs; R2 adds no entropy).
-    async fn r2_put_resilient(&self, binding: &str, key: &str, bytes: Vec<u8>) -> std::result::Result<(), ()> {
+    async fn r2_put_resilient(
+        &self,
+        binding: &str,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> std::result::Result<(), ()> {
         if self.r2_breaker_open() {
             console_log("[r2-fs-put] breaker OPEN — skipping put");
             return Err(());
@@ -2279,7 +2404,9 @@ impl KernelDO {
             let bucket = match self.env.bucket(binding) {
                 Ok(b) => b,
                 Err(e) => {
-                    console_log(&format!("[r2-fs-put] bucket bind failed (attempt {attempt}): {e:?}"));
+                    console_log(&format!(
+                        "[r2-fs-put] bucket bind failed (attempt {attempt}): {e:?}"
+                    ));
                     continue;
                 }
             };
@@ -2291,12 +2418,16 @@ impl KernelDO {
                     self.r2_breaker_record_success();
                     return Ok(());
                 }
-                Some(Err(e)) => console_log(&format!("[r2-fs-put] transient error attempt {attempt}: {e:?}")),
+                Some(Err(e)) => console_log(&format!(
+                    "[r2-fs-put] transient error attempt {attempt}: {e:?}"
+                )),
                 None => console_log(&format!("[r2-fs-put] timeout attempt {attempt}")),
             }
         }
         self.r2_breaker_record_failure();
-        console_log(&format!("[r2-fs-put] EXHAUSTED {R2_GET_ATTEMPTS} attempts for key {key}"));
+        console_log(&format!(
+            "[r2-fs-put] EXHAUSTED {R2_GET_ATTEMPTS} attempts for key {key}"
+        ));
         Err(())
     }
 
@@ -2351,6 +2482,82 @@ impl KernelDO {
                     "queueDepth": self.eval_queue_depth(),
                     "maxQueueDepth": self.max_eval_queue_depth(),
                 }))
+            }
+            "_fault" => {
+                if !self.fault_test_enabled() {
+                    return Ok(self.fault_reject("_fault"));
+                }
+                let op = msg.get("op").and_then(|v| v.as_str()).unwrap_or("status");
+                match op {
+                    "status" => Ok(json!({
+                        "ok": true,
+                        "t": "_fault",
+                        "enabled": true,
+                        "generation": self.generation,
+                        "activeEval": self.active_eval(),
+                        "r2MissOnceKey": self.fault_read_meta("r2MissOnceKey").unwrap_or_default(),
+                        "r2MissOnceFired": self.fault_read_meta("r2MissOnceFired").unwrap_or_default(),
+                    })),
+                    "r2-miss-once" => {
+                        let key = msg.get("key").and_then(|v| v.as_str()).unwrap_or("*");
+                        self.fault_write_meta("r2MissOnceKey", key);
+                        self.fault_write_meta("r2MissOnceFired", "0");
+                        Ok(json!({"ok": true, "t": "_fault", "op": op, "key": key}))
+                    }
+                    "clear" => {
+                        self.fault_write_meta("r2MissOnceKey", "");
+                        self.fault_write_meta("r2MissOnceFired", "");
+                        Ok(json!({"ok": true, "t": "_fault", "op": op}))
+                    }
+                    "checkpoint-evict" => {
+                        if self.glue.borrow().is_none() {
+                            return Ok(json!({
+                                "ok": false,
+                                "t": "_fault",
+                                "op": op,
+                                "valueType": "error",
+                                "error": {"name":"FaultNoLiveKernel","message":"no live kernel to checkpoint/evict"}
+                            }));
+                        }
+                        let cell = self.next_cell();
+                        let epoch = read_int(&self.store(), "epoch", 0);
+                        let force_full = msg
+                            .get("forceFull")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        let ckpt = if force_full {
+                            self.checkpoint_force_full(
+                                cell,
+                                epoch,
+                                "/* fault checkpoint while parked */",
+                            )
+                            .await
+                        } else {
+                            self.checkpoint(cell, epoch, "/* fault checkpoint while parked */")
+                                .await
+                        };
+                        let dropped = self
+                            .glue
+                            .borrow_mut()
+                            .take()
+                            .map(|g| {
+                                g.drop_kernel();
+                                true
+                            })
+                            .unwrap_or(false);
+                        match ckpt {
+                            Ok(v) => Ok(
+                                json!({"ok": true, "t": "_fault", "op": op, "checkpoint": v, "droppedInMemory": dropped, "generation": self.generation}),
+                            ),
+                            Err(e) => Ok(
+                                json!({"ok": false, "t": "_fault", "op": op, "error": format!("{e}"), "droppedInMemory": dropped, "generation": self.generation}),
+                            ),
+                        }
+                    }
+                    _ => Ok(
+                        json!({"ok": false, "t": "_fault", "error": format!("unknown fault op {op}")}),
+                    ),
+                }
             }
             // VFS-* out-of-band file I/O. Serviced DIRECTLY against the host.fs R2 store (same
             // key scheme `fs/<doId>/<normpath>`, same SNAPSHOTS bucket, same `fs_files` meta table,
@@ -2523,7 +2730,8 @@ impl KernelDO {
         // BUG-3 FIX: snapshot the durable fsVersion at eval start. A mutex-free frame write that
         // commits during this eval's park bumps fsVersion; flush_staged_fs compares against this to
         // avoid clobbering an ACKed out-of-band write with the staged last-writer-wins flush.
-        self.eval_start_fs_version.set(read_fs_version(&self.store()));
+        self.eval_start_fs_version
+            .set(read_fs_version(&self.store()));
         let src = msg.get("src").and_then(|v| v.as_str()).unwrap_or("");
         let req_id = msg
             .get("reqId")
@@ -3107,10 +3315,11 @@ impl KernelDO {
     ) -> Result<serde_json::Value> {
         const BASE_EVERY: i64 = 20;
         let prev = self.read_manifest();
-        let force_full = force_full_override || match &prev {
-            None => true,
-            Some(m) => m.delta_seq + 1 >= BASE_EVERY,
-        };
+        let force_full = force_full_override
+            || match &prev {
+                None => true,
+                Some(m) => m.delta_seq + 1 >= BASE_EVERY,
+            };
 
         let glue = clone_glue(self.glue.borrow().as_ref().unwrap());
         let dump = JsFuture::from(glue.dump_w4(force_full))
@@ -3123,6 +3332,8 @@ impl KernelDO {
         let size_raw = num_field(&dump, "sizeRaw").unwrap_or(0.0) as i64;
         let size_gz = num_field(&dump, "sizeGz").unwrap_or(0.0) as i64;
         let used_heap = num_field(&dump, "usedHeap").unwrap_or(0.0) as i64;
+        let buffer_bytes = num_field(&dump, "bufferBytes").unwrap_or(0.0) as i64;
+        let scratch_len = num_field(&dump, "scratchLen").unwrap_or(0.0) as i64;
         let scrubbed = Reflect::get(&dump, &JsValue::from_str("scrubbed"))
             .ok()
             .and_then(|v| v.as_bool())
@@ -3250,6 +3461,9 @@ impl KernelDO {
                 "nChunks": base_n_chunks, "deltaSeq": delta_seq_new + 1, "nChanged": n_changed,
                 "grain": grain, "sizeRaw": size_raw, "sizeGz": size_gz, "usedHeap": used_heap,
                 "scrubbed": scrubbed, "clockCalls": clock_calls, "rngCalls": rng_calls,
+                "faultTelemetry": if self.fault_test_enabled() {
+                    json!({"bufferBytes": buffer_bytes, "usedHeap": used_heap, "scratchLen": scratch_len})
+                } else { serde_json::Value::Null },
             }));
         }
 
@@ -3365,6 +3579,9 @@ impl KernelDO {
             "ok": true, "cell": cell, "store": store, "mode": "full", "nChunks": n_chunks,
             "deltaSeq": 0, "sizeRaw": size_raw, "sizeGz": size_gz, "usedHeap": used_heap,
             "scrubbed": scrubbed, "clockCalls": clock_calls, "rngCalls": rng_calls, "r2Key": new_r2_key,
+            "faultTelemetry": if self.fault_test_enabled() {
+                json!({"bufferBytes": buffer_bytes, "usedHeap": used_heap, "scratchLen": scratch_len})
+            } else { serde_json::Value::Null },
         }))
     }
 
@@ -3418,7 +3635,10 @@ impl KernelDO {
             size_gz: r.size_gz.unwrap_or(0),
             final_crc: r.final_crc.unwrap_or(0),
             // back-compat: NULL/absent => "gzip" (pre-issue-#9 bases were gzip).
-            snap_codec: r.snap_codec.filter(|c| !c.is_empty()).unwrap_or_else(|| "gzip".into()),
+            snap_codec: r
+                .snap_codec
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| "gzip".into()),
         })
     }
 
@@ -3447,7 +3667,11 @@ impl KernelDO {
                     (0, store::StoreValue::Blob(b)) => payload = Some(b),
                     (1, store::StoreValue::Blob(b)) => indices = Some(b),
                     (2, store::StoreValue::Integer(n)) => grain = n,
-                    (3, store::StoreValue::String(t)) => { if !t.is_empty() { codec = t; } }
+                    (3, store::StoreValue::String(t)) => {
+                        if !t.is_empty() {
+                            codec = t;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -3466,7 +3690,12 @@ impl KernelDO {
                 &JsValue::from_f64(grain as f64),
             )
             .ok();
-            Reflect::set(&obj, &JsValue::from_str("codec"), &JsValue::from_str(&codec)).ok();
+            Reflect::set(
+                &obj,
+                &JsValue::from_str("codec"),
+                &JsValue::from_str(&codec),
+            )
+            .ok();
             out.push(&obj);
             count += 1;
         }
@@ -4435,17 +4664,15 @@ async fn r2_fs_op(
                                                 .bytes()
                                                 .await
                                                 .map_err(|e| JsValue::from_str(&format!("{e}")))?;
-                                            let arr = Uint8Array::new_with_length(bytes.len() as u32);
+                                            let arr =
+                                                Uint8Array::new_with_length(bytes.len() as u32);
                                             arr.copy_from(&bytes);
                                             set("ok", &JsValue::TRUE);
                                             set("size", &JsValue::from_f64(total as f64));
                                             set("bytes", &arr.into());
                                         }
                                         // Raced delete between HEAD and GET => treat as absent.
-                                        _ => set(
-                                            "error",
-                                            &JsValue::from_str(&enoent(&raw_path)),
-                                        ),
+                                        _ => set("error", &JsValue::from_str(&enoent(&raw_path))),
                                     }
                                 }
                             }
@@ -4482,10 +4709,13 @@ async fn r2_fs_op(
                                 }
                                 // Committed meta but missing body = a torn write (per SANDBOX-API):
                                 // report it distinctly so callers can detect, never return garbage.
-                                _ => set("error", &JsValue::from_str(&format!(
-                                    "ENOENT: torn file (committed meta, body absent), '{}'",
-                                    raw_path
-                                ))),
+                                _ => set(
+                                    "error",
+                                    &JsValue::from_str(&format!(
+                                        "ENOENT: torn file (committed meta, body absent), '{}'",
+                                        raw_path
+                                    )),
+                                ),
                             }
                         }
                     }
@@ -4511,13 +4741,22 @@ async fn r2_fs_op(
                         buf.extend_from_slice(&new_bytes);
                     } else {
                         // last op was a delete: start a fresh write with just this chunk
-                        st.push(FsStage { path: path.clone(), op: FsStageOp::Write(new_bytes) });
+                        st.push(FsStage {
+                            path: path.clone(),
+                            op: FsStageOp::Write(new_bytes),
+                        });
                     }
                 } else {
-                    st.push(FsStage { path: path.clone(), op: FsStageOp::Write(new_bytes) });
+                    st.push(FsStage {
+                        path: path.clone(),
+                        op: FsStageOp::Write(new_bytes),
+                    });
                 }
             } else {
-                st.push(FsStage { path: path.clone(), op: FsStageOp::Write(new_bytes) });
+                st.push(FsStage {
+                    path: path.clone(),
+                    op: FsStageOp::Write(new_bytes),
+                });
             }
             set("ok", &JsValue::TRUE);
         }
@@ -4531,8 +4770,8 @@ async fn r2_fs_op(
         }
         "stat" => {
             let size = match staged_view(&path) {
-                Some(None) => None,                       // staged-deleted => absent
-                Some(Some((_, sz))) => Some(sz),          // staged write => its size
+                Some(None) => None,                           // staged-deleted => absent
+                Some(Some((_, sz))) => Some(sz),              // staged write => its size
                 None => committed.get(&path).map(|m| m.size), // committed size
             };
             match size {
@@ -4548,7 +4787,11 @@ async fn r2_fs_op(
         "list" => {
             // The committed namespace overlaid with this cell's staged writes/deletes, scoped to the
             // requested dir prefix. Returns the immediate child names (files + synthetic subdir names).
-            let dir = if path == "/" { "/".to_string() } else { format!("{}/", path) };
+            let dir = if path == "/" {
+                "/".to_string()
+            } else {
+                format!("{}/", path)
+            };
             let pre = if path == "/" { "/" } else { dir.as_str() };
             // effective path set = committed - staged-deletes + staged-writes
             let mut eff: std::collections::BTreeSet<String> = committed.keys().cloned().collect();

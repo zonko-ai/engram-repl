@@ -165,6 +165,7 @@ interface DumpCommon {
   sizeRaw: number;
   usedHeap: number;
   bufferBytes: number;
+  scratchLen: number;
   scrubbed: boolean;
   stackPointer: number;
   clockCalls: number;
@@ -887,8 +888,14 @@ const SCRATCH_DELTA_BYTES = 31 * 1024 * 1024;       // 32MB scratch - the old 1M
 const CLOCK_EPOCH_BASE_MS = 1_700_000_000_000;
 const MAX_USED_BYTES = 50 * 1024 * 1024;            // refuse snapshot above ~50MB live used heap
 const MAX_RESTORE_USED_BYTES = 50 * 1024 * 1024;    // refuse restore above ~50MB recorded used heap
-const SAFE_SERIALIZE_BUFFER_BYTES = 45 * 1024 * 1024 + SCRATCH_DELTA_BYTES; // 76MB raw-image cap (+31MB resident scratch)
-const MAX_RESTORE_RAW_BYTES = 45 * 1024 * 1024 + SCRATCH_DELTA_BYTES;       // 76MB safe-to-instantiate ceiling (lockstep w/ dump)
+// CHAOS-FAULT-INJECTION 2026-06-15: restore retains one reconstructed image plus the live WASM
+// instance (2x raw, after the BUG-1 triple-buffer mitigation). Local workerd sweep found the cliff
+// between 60-64MiB raw; gate both dump and restore at 60MiB raw. This deliberately admits normal
+// sessions whose raw image is ~29MiB but gzip is tiny, while rejecting the large raw images that
+// cannot be restored without crossing the DO memory cliff.
+const MEASURED_RESTORE_RAW_CEILING_BYTES = 60 * 1024 * 1024;
+const SAFE_SERIALIZE_BUFFER_BYTES = MEASURED_RESTORE_RAW_CEILING_BYTES;
+const MAX_RESTORE_RAW_BYTES = MEASURED_RESTORE_RAW_CEILING_BYTES;
 // Above this raw-image size, dumpW4 takes a 2-copy NO-RETAIN full path (it does NOT retain
 // _lastImage and does NOT diff against prev) so peak DO memory during the dump is ~raw + gz, not
 // the ~3x raw the delta/full-with-retain paths cost — which OOMs the DO once the buffer carries a
@@ -2620,6 +2627,7 @@ class GlueKernel {
       sizeRaw: raw.length,
       usedHeap,
       bufferBytes,
+      scratchLen: Number(ex.scratch_cap()),
       scrubbed,
       stackPointer: 0,
       clockCalls: Number(ex.clock_calls()),

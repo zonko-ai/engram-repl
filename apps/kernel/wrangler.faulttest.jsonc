@@ -1,0 +1,32 @@
+{
+  "name": "engram-kernel-faulttest",
+  "main": "entry.mjs",
+  "compatibility_date": "2025-05-01",
+  "compatibility_flags": ["nodejs_compat", "enable_ctx_exports"],
+  "observability": { "enabled": true },
+  "vars": {
+    "ENGRAM_AUTH_ENFORCE": "0",
+    "ENGRAM_FAULT_TEST": "1"
+  },
+  "build": { "command": "true" },
+  "rules": [
+    { "type": "CompiledWasm", "globs": ["src/engine.wasm", "src/zstd-codec.wasm"], "fallthrough": true },
+    { "type": "Text", "globs": ["src/stdlib.bundle.txt"], "fallthrough": true }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "KERNEL_DO", "class_name": "KernelDO" }]
+  },
+  "migrations": [{ "tag": "faulttest-v1", "new_sqlite_classes": ["KernelDO"] }],
+  "r2_buckets": [
+    { "binding": "SNAPSHOTS", "bucket_name": "engram-faulttest-snapshots" }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "AE", "dataset": "engram_kernel_faulttest" }
+  ],
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  }
+}
